@@ -1,6 +1,9 @@
 fastapi
 uvicorn
-google-generativeai
 python-multipart
-PyPDF2
 python-dotenv
+PyPDF2
+sentence-transformers
+scikit-learn
+numpy
+openai
