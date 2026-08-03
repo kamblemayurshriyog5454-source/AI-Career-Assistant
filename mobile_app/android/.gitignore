@@ -1,0 +1,15 @@
+# Environment files
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Flutter
+build/
+.dart_tool/
+
+# Android
+mobile_app/android/.gradle/
+mobile_app/android/local.properties
