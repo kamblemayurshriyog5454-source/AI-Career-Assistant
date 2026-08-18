@@ -10,11 +10,13 @@ import tempfile
 import json
 import os
 
+
 # ============================================
 # Load Environment Variables
 # ============================================
 
 load_dotenv()
+
 
 # ============================================
 # Groq Client
@@ -25,6 +27,7 @@ client = OpenAI(
     base_url="https://api.groq.com/openai/v1",
 )
 
+
 # ============================================
 # FastAPI App
 # ============================================
@@ -33,6 +36,7 @@ app = FastAPI(
     title="AI Career Assistant",
     version="3.0"
 )
+
 
 # ============================================
 # CORS
@@ -46,19 +50,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ============================================
-# Home API
+# HOME
 # ============================================
 
 @app.get("/")
 async def home():
+
     return {
         "success": True,
         "message": "AI Career Assistant Backend Running Successfully"
     }
 
+
 # ============================================
-# Models
+# MODELS
 # ============================================
 
 class ChatRequest(BaseModel):
@@ -71,7 +78,7 @@ class InterviewAnswer(BaseModel):
 
 
 # ============================================
-# Extract Resume Text
+# EXTRACT RESUME TEXT
 # ============================================
 
 def extract_resume_text(file: UploadFile):
@@ -82,26 +89,32 @@ def extract_resume_text(file: UploadFile):
     ) as temp:
 
         temp.write(file.file.read())
+
         temp_path = temp.name
 
-    reader = PdfReader(temp_path)
+    try:
 
-    text = ""
+        reader = PdfReader(temp_path)
 
-    for page in reader.pages:
+        text = ""
 
-        page_text = page.extract_text()
+        for page in reader.pages:
 
-        if page_text:
-            text += page_text + "\n"
+            page_text = page.extract_text()
 
-    os.remove(temp_path)
+            if page_text:
+                text += page_text + "\n"
 
-    return text
+        return text
+
+    finally:
+
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 # ============================================
-# AI Helper
+# AI HELPER
 # ============================================
 
 def ask_ai(prompt: str):
@@ -113,7 +126,9 @@ def ask_ai(prompt: str):
         messages=[
             {
                 "role": "system",
-                "content": "You are an expert AI Career Assistant."
+                "content":
+                "You are an expert AI Career Assistant "
+                "and professional technical interviewer."
             },
             {
                 "role": "user",
@@ -122,6 +137,7 @@ def ask_ai(prompt: str):
         ],
 
         temperature=0.4,
+
         max_tokens=2048,
     )
 
@@ -129,11 +145,13 @@ def ask_ai(prompt: str):
 
 
 # ============================================
-# Resume Analysis
+# RESUME ANALYSIS
 # ============================================
 
 @app.post("/analyze")
-async def analyze_resume(file: UploadFile = File(...)):
+async def analyze_resume(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -176,12 +194,16 @@ Resume:
             "success": False,
             "error": str(e)
         }
+
+
 # ============================================
-# ATS Score
+# ATS SCORE
 # ============================================
 
 @app.post("/ats-score")
-async def ats_score(file: UploadFile = File(...)):
+async def ats_score(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -216,11 +238,13 @@ Resume:
 
 
 # ============================================
-# Job Recommendation
+# JOB RECOMMENDATION
 # ============================================
 
 @app.post("/job-recommendation")
-async def job_recommendation(file: UploadFile = File(...)):
+async def job_recommendation(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -260,11 +284,13 @@ Resume:
 
 
 # ============================================
-# Skill Gap Analysis
+# SKILL GAP ANALYSIS
 # ============================================
 
 @app.post("/skill-gap")
-async def skill_gap(file: UploadFile = File(...)):
+async def skill_gap(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -302,13 +328,17 @@ Resume:
         return {
             "success": False,
             "error": str(e)
-        }        
+        }
+
+
 # ============================================
-# Course Recommendation
+# COURSE RECOMMENDATION
 # ============================================
 
 @app.post("/course-recommendation")
-async def course_recommendation(file: UploadFile = File(...)):
+async def course_recommendation(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -350,11 +380,13 @@ Resume:
 
 
 # ============================================
-# Learning Roadmap
+# LEARNING ROADMAP
 # ============================================
 
 @app.post("/learning-roadmap")
-async def learning_roadmap(file: UploadFile = File(...)):
+async def learning_roadmap(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -399,12 +431,16 @@ Resume:
             "success": False,
             "error": str(e)
         }
+
+
 # ============================================
-# Mock Interview Questions
+# MOCK INTERVIEW
 # ============================================
 
 @app.post("/mock-interview")
-async def mock_interview(file: UploadFile = File(...)):
+async def mock_interview(
+    file: UploadFile = File(...)
+):
 
     try:
 
@@ -476,24 +512,62 @@ Resume:
 
 
 # ============================================
-# Evaluate Interview Answer
+# EVALUATE INTERVIEW ANSWER
 # ============================================
 
-@app.post("/evaluate-answer")
-async def evaluate_answer(data: InterviewAnswer):
+async def evaluate_interview_answer(
+    data: InterviewAnswer
+):
 
     try:
+
+        # ----------------------------------------
+        # VALIDATE QUESTION
+        # ----------------------------------------
+
+        if not data.question.strip():
+
+            return {
+                "success": False,
+                "error": "Interview question is empty."
+            }
+
+
+        # ----------------------------------------
+        # VALIDATE ANSWER
+        # ----------------------------------------
+
+        if not data.answer.strip():
+
+            return {
+                "success": False,
+                "error": "Candidate answer is empty."
+            }
+
+
+        # ----------------------------------------
+        # AI EVALUATION PROMPT
+        # ----------------------------------------
 
         prompt = f"""
 You are an expert technical interviewer.
 
-Evaluate the candidate's answer.
+Evaluate the candidate's answer carefully.
 
-Question:
+Interview Question:
 {data.question}
 
 Candidate Answer:
 {data.answer}
+
+Evaluate the answer based on:
+
+1. Technical correctness
+2. Understanding
+3. Relevance
+4. Clarity
+5. Completeness
+6. Communication
 
 Return EXACTLY in this format:
 
@@ -502,16 +576,18 @@ Score: X/10
 Strengths:
 - Point 1
 - Point 2
+- Point 3
 
 Weaknesses:
 - Point 1
 - Point 2
+- Point 3
 
 Suggested Better Answer:
-(Write an ideal answer)
+Write a clear and professional ideal answer.
 
 Final Feedback:
-(Overall feedback)
+Give concise overall feedback and tell the candidate how they can improve.
 """
 
         answer = ask_ai(prompt)
@@ -527,12 +603,58 @@ Final Feedback:
             "success": False,
             "error": str(e)
         }
+
+
 # ============================================
-# AI Career Chatbot
+# PRIMARY EVALUATION ENDPOINT
+# ============================================
+
+@app.post("/evaluate-answer")
+async def evaluate_answer(
+    data: InterviewAnswer
+):
+
+    return await evaluate_interview_answer(data)
+
+
+# ============================================
+# BACKWARD COMPATIBILITY ENDPOINT
+#
+# If your old Flutter code is calling /evaluate,
+# this will also work.
+# ============================================
+
+@app.post("/evaluate")
+async def evaluate(
+    data: InterviewAnswer
+):
+
+    return await evaluate_interview_answer(data)
+
+
+# ============================================
+# BACKWARD COMPATIBILITY ENDPOINT
+#
+# If your Flutter code calls /evaluate_interview,
+# this will also work.
+# ============================================
+
+@app.post("/evaluate_interview")
+async def evaluate_interview(
+    data: InterviewAnswer
+):
+
+    return await evaluate_interview_answer(data)
+
+
+# ============================================
+# AI CAREER CHATBOT
 # ============================================
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(
+    request: ChatRequest
+):
 
     try:
 
@@ -578,7 +700,7 @@ Question:
 
 
 # ============================================
-# Health Check
+# HEALTH CHECK
 # ============================================
 
 @app.get("/health")
@@ -589,7 +711,8 @@ async def health():
         "status": "Backend Running",
         "version": "3.0"
     }
-    
+
+
 # ============================================
 # AVAILABLE GROQ MODELS
 # ============================================
@@ -614,9 +737,11 @@ async def get_models():
         return {
             "success": False,
             "error": str(e)
-        }    
+        }
+
+
 # ============================================
-# Run Server
+# RUN SERVER
 # ============================================
 
 if __name__ == "__main__":
@@ -628,4 +753,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-    )                            
+    )
