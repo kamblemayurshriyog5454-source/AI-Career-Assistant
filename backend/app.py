@@ -589,6 +589,32 @@ async def health():
         "status": "Backend Running",
         "version": "3.0"
     }
+    
+# ============================================
+# AVAILABLE GROQ MODELS
+# ============================================
+
+@app.get("/models")
+async def get_models():
+
+    try:
+
+        models = client.models.list()
+
+        return {
+            "success": True,
+            "models": [
+                model.id
+                for model in models.data
+            ]
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "error": str(e)
+        }    
 # ============================================
 # Run Server
 # ============================================
