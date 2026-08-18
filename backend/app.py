@@ -40,8 +40,7 @@ client = OpenAI(
 
 app = FastAPI(
     title="AI Career Assistant",
-    version="4.0",
-    description="AI Career Assistant Backend",
+    version="4.0"
 )
 
 
@@ -59,13 +58,6 @@ app.add_middleware(
 
 
 # ============================================================
-# CONFIGURATION
-# ============================================================
-
-AI_MODEL = "openai/gpt-oss-120b"
-
-
-# ============================================================
 # HOME
 # ============================================================
 
@@ -75,13 +67,12 @@ async def home():
     return {
         "success": True,
         "message": "AI Career Assistant Backend Running Successfully",
-        "version": "4.0",
-        "model": AI_MODEL,
+        "version": "4.0"
     }
 
 
 # ============================================================
-# DATA MODELS
+# MODELS
 # ============================================================
 
 class ChatRequest(BaseModel):
@@ -94,24 +85,24 @@ class InterviewAnswer(BaseModel):
 
 
 class InterviewEvaluationRequest(BaseModel):
-    resume: str = ""
+    resume: str
     questions: list[str]
     answers: list[str]
 
 
 # ============================================================
-# RESUME TEXT EXTRACTION
+# PDF TEXT EXTRACTION
 # ============================================================
 
-async def extract_resume_text(file: UploadFile) -> str:
+def extract_resume_text(file: UploadFile):
 
     temp_path = None
 
     try:
 
-        content = await file.read()
+        file_content = file.file.read()
 
-        if not content:
+        if not file_content:
             raise Exception("Uploaded PDF is empty.")
 
         with tempfile.NamedTemporaryFile(
@@ -119,7 +110,7 @@ async def extract_resume_text(file: UploadFile) -> str:
             suffix=".pdf"
         ) as temp:
 
-            temp.write(content)
+            temp.write(file_content)
             temp_path = temp.name
 
         reader = PdfReader(temp_path)
@@ -128,126 +119,97 @@ async def extract_resume_text(file: UploadFile) -> str:
 
         for page in reader.pages:
 
-            try:
+            page_text = page.extract_text()
 
-                page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
 
-                if page_text:
-                    text += page_text + "\n"
-
-            except Exception as e:
-
-                print(
-                    f"PDF page extraction error: {e}"
-                )
-
-        text = text.strip()
-
-        if not text:
-
+        if not text.strip():
             raise Exception(
                 "Could not extract text from the PDF. "
                 "Please upload a text-based PDF."
             )
 
-        return text
+        return text.strip()
 
     finally:
 
         if temp_path and os.path.exists(temp_path):
-
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
+            os.remove(temp_path)
 
 
 # ============================================================
 # AI HELPER
 # ============================================================
 
-def ask_ai(
-    prompt: str,
-    temperature: float = 0.4,
-    max_tokens: int = 4096,
-) -> str:
-
-    if not GROQ_API_KEY:
-
-        raise Exception(
-            "GROQ_API_KEY is not configured on the server."
-        )
+def ask_ai(prompt: str):
 
     response = client.chat.completions.create(
 
-        model=AI_MODEL,
+        model="openai/gpt-oss-20b",
 
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You are an expert AI Career Assistant, "
-                    "professional interviewer and career advisor."
-                ),
+                    "ATS resume expert and technical interviewer. "
+                    "Give accurate, professional and useful answers."
+                )
             },
             {
                 "role": "user",
-                "content": prompt,
-            },
+                "content": prompt
+            }
         ],
 
-        temperature=temperature,
-        max_tokens=max_tokens,
+        temperature=0.3,
+        max_tokens=4096,
     )
 
-    if not response.choices:
-
-        raise Exception(
-            "AI returned an empty response."
-        )
-
-    answer = response.choices[0].message.content
-
-    if not answer:
-
-        raise Exception(
-            "AI returned an empty answer."
-        )
-
-    return answer.strip()
+    return response.choices[0].message.content
 
 
 # ============================================================
-# JSON CLEANER
+# CLEAN AI JSON
 # ============================================================
 
-def clean_json_response(text: str):
+def clean_json_response(answer: str):
 
-    text = text.strip()
+    answer = answer.strip()
 
-    # Remove markdown code blocks
-    text = re.sub(
+    # Remove ```json
+    answer = re.sub(
         r"^```json\s*",
         "",
-        text,
-        flags=re.IGNORECASE,
+        answer,
+        flags=re.IGNORECASE
     )
 
-    text = re.sub(
+    # Remove ```
+    answer = re.sub(
         r"^```\s*",
         "",
-        text,
+        answer
     )
 
-    text = re.sub(
+    answer = re.sub(
         r"\s*```$",
         "",
-        text,
+        answer
     )
 
-    text = text.strip()
+    # Find first JSON object
+    first_brace = answer.find("{")
+    last_brace = answer.rfind("}")
 
-    return json.loads(text)
+    if first_brace != -1 and last_brace != -1:
+
+        answer = answer[
+            first_brace:last_brace + 1
+        ]
+
+    return answer.strip()
 
 
 # ============================================================
@@ -261,38 +223,111 @@ async def analyze_resume(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
-You are an ATS Resume Expert.
+You are a professional ATS resume analyzer.
 
-Analyze the following resume professionally.
+Analyze the resume below.
 
-Return the following sections:
+IMPORTANT:
+Return ONLY valid JSON.
 
-1. ATS Score (Out of 100)
+DO NOT use Markdown.
+DO NOT use ```json.
+DO NOT add explanations outside JSON.
 
-2. Professional Summary
+Use EXACTLY this structure:
 
-3. Technical Skills
+{{
+    "ats_score": 0,
 
-4. Soft Skills
+    "professional_summary": "",
 
-5. Education
+    "technical_skills": [],
 
-6. Projects
+    "soft_skills": [],
 
-7. Experience
+    "education": [
+        {{
+            "qualification": "",
+            "institution": "",
+            "year": "",
+            "score": ""
+        }}
+    ],
 
-8. Strengths
+    "projects": [
+        {{
+            "name": "",
+            "technologies": [],
+            "description": "",
+            "outcome": ""
+        }}
+    ],
 
-9. Weaknesses
+    "experience": [
+        {{
+            "role": "",
+            "company": "",
+            "duration": "",
+            "responsibilities": []
+        }}
+    ],
 
-10. Suggestions to Improve
+    "strengths": [],
 
-11. Recommended Career Roles
+    "weaknesses": [],
 
-Keep the report clear and suitable for an early-career student.
+    "suggestions": [],
+
+    "recommended_roles": [
+        {{
+            "role": "",
+            "match_percentage": 0,
+            "reason": ""
+        }}
+    ],
+
+    "final_verdict": ""
+}}
+
+RULES:
+
+1. ats_score must be between 0 and 100.
+
+2. professional_summary must be concise and professional.
+
+3. technical_skills must contain skills actually found
+   in the resume.
+
+4. soft_skills must contain skills actually supported
+   by the resume.
+
+5. education must contain education information.
+
+6. projects must contain project information.
+
+7. experience must contain internship/work information.
+
+8. strengths must contain realistic strengths.
+
+9. weaknesses must contain realistic weaknesses.
+
+10. suggestions must contain practical resume improvements.
+
+11. recommended_roles must contain suitable entry-level
+    career roles.
+
+12. match_percentage must be between 0 and 100.
+
+13. final_verdict must be a short professional conclusion.
+
+14. NEVER invent companies, marks, projects,
+    technologies or achievements.
+
+15. If information is missing, write:
+    "Not specified"
 
 Resume:
 
@@ -301,20 +336,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            analysis = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "AI returned invalid JSON.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "analysis": answer,
+            "analysis": analysis
         }
 
     except Exception as e:
 
-        print(
-            f"Resume Analysis Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -329,27 +374,22 @@ async def ats_score(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
-Analyze this resume as an ATS system.
+Analyze this resume as an ATS expert.
 
-Return exactly:
+Return ONLY valid JSON:
 
-ATS Score: X/100
+{{
+    "score": 0,
+    "reason": "",
+    "improvements": []
+}}
 
-Reason:
-Give a clear explanation.
+Score must be between 0 and 100.
 
-Missing Keywords:
-- keyword 1
-- keyword 2
-- keyword 3
-
-Improvement Suggestions:
-- suggestion 1
-- suggestion 2
-- suggestion 3
+Do not invent information.
 
 Resume:
 
@@ -358,20 +398,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "score": answer,
+            "score": result
         }
 
     except Exception as e:
 
-        print(
-            f"ATS Score Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -386,22 +436,26 @@ async def job_recommendation(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
 Analyze this resume.
 
-Recommend the TOP 10 most suitable career roles.
+Recommend exactly 10 suitable entry-level jobs.
 
-For every role provide:
+Return ONLY valid JSON:
 
-Job Title:
-Match Percentage:
-Why It Matches:
-Required Skills:
-Skills Missing:
+{{
+    "jobs": [
+        {{
+            "job_title": "",
+            "match_percentage": 0,
+            "reason": ""
+        }}
+    ]
+}}
 
-Rank the jobs from highest match to lowest match.
+Do not invent experience.
 
 Resume:
 
@@ -410,20 +464,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "jobs": answer,
+            "jobs": result.get("jobs", [])
         }
 
     except Exception as e:
 
-        print(
-            f"Job Recommendation Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -438,37 +502,21 @@ async def skill_gap(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
 You are an AI Career Advisor.
 
-Analyze this resume for a career in
-Artificial Intelligence and Data Science.
+Analyze this resume for an AI / Data Science career.
 
-Return:
+Return ONLY valid JSON:
 
-Overall Match:
-
-Current Skills:
-- ...
-
-Missing Skills:
-- ...
-
-Technical Skill Gaps:
-- ...
-
-Recommended Skills:
-- ...
-
-Learning Suggestions:
-- ...
-
-Priority:
-High:
-Medium:
-Low:
+{{
+    "overall_match": 0,
+    "strengths": [],
+    "missing_skills": [],
+    "learning_suggestions": []
+}}
 
 Resume:
 
@@ -477,20 +525,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "analysis": answer,
+            "analysis": result
         }
 
     except Exception as e:
 
-        print(
-            f"Skill Gap Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -505,26 +563,27 @@ async def course_recommendation(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
 Analyze this resume.
 
-Recommend the BEST online courses for improving
-the candidate's career.
+Recommend useful online courses.
 
-Recommend around 8 courses.
+Return ONLY valid JSON:
 
-For every course provide:
+{{
+    "courses": [
+        {{
+            "course_name": "",
+            "platform": "",
+            "duration": "",
+            "reason": ""
+        }}
+    ]
+}}
 
-Course Name:
-Platform:
-Level:
-Duration:
-Skills Learned:
-Reason:
-
-Prefer well-known learning platforms.
+Recommend realistic courses.
 
 Resume:
 
@@ -533,20 +592,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "courses": answer,
+            "courses": result.get("courses", [])
         }
 
     except Exception as e:
 
-        print(
-            f"Course Recommendation Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -561,43 +630,25 @@ async def learning_roadmap(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
-Create a professional learning roadmap
-based on this resume.
+Create a personalized career learning roadmap.
 
-The candidate is an early-career student.
+Return ONLY valid JSON:
 
-Return:
+{{
+    "current_level": "",
+    "career_goal": "",
+    "month_1": [],
+    "month_2": [],
+    "month_3": [],
+    "month_4": [],
+    "recommended_certifications": [],
+    "final_advice": ""
+}}
 
-Current Level:
-
-Career Goal:
-
-Month 1:
-Topics:
-Projects:
-
-Month 2:
-Topics:
-Projects:
-
-Month 3:
-Topics:
-Projects:
-
-Month 4:
-Topics:
-Projects:
-
-Recommended Certifications:
-
-Portfolio Projects:
-
-Interview Preparation:
-
-Final Advice:
+Base everything on the resume.
 
 Resume:
 
@@ -606,20 +657,30 @@ Resume:
 
         answer = ask_ai(prompt)
 
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
+
         return {
             "success": True,
-            "roadmap": answer,
+            "roadmap": result
         }
 
     except Exception as e:
 
-        print(
-            f"Learning Roadmap Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -634,115 +695,121 @@ async def mock_interview(
 
     try:
 
-        resume = await extract_resume_text(file)
+        resume = extract_resume_text(file)
 
         prompt = f"""
-You are an expert technical interviewer.
+You are a professional technical interviewer.
 
-Read the candidate resume carefully.
+Read the resume carefully.
 
 Generate EXACTLY 10 interview questions.
 
-Distribution:
+Question distribution:
 
 5 Technical Questions
 3 HR Questions
-2 Project / Resume Questions
+2 Project Questions
 
-Questions must be personalized to the resume.
+Questions must be directly related to the candidate's
+resume, education, projects and internships.
 
 Return ONLY a valid JSON array.
 
 Example:
 
 [
-  "Explain your final year project.",
-  "What is supervised learning?",
-  "Explain OOP concepts in Java.",
-  "What are your strengths?",
-  "Where do you see yourself in five years?"
+    "Explain your machine learning project.",
+    "What is inheritance in Java?",
+    "What is your biggest strength?"
 ]
+
+Do not add numbering.
+Do not add explanations.
+Do not use Markdown.
 
 Resume:
 
 {resume}
 """
 
-        answer = ask_ai(
-            prompt,
-            temperature=0.3,
-            max_tokens=3000,
+        answer = ask_ai(prompt)
+
+        cleaned = answer.strip()
+
+        # Remove markdown if model accidentally adds it
+        cleaned = re.sub(
+            r"^```json\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE
         )
 
-        questions = []
+        cleaned = re.sub(
+            r"^```\s*",
+            "",
+            cleaned
+        )
+
+        cleaned = re.sub(
+            r"\s*```$",
+            "",
+            cleaned
+        )
 
         try:
 
-            parsed = clean_json_response(
-                answer
+            questions = json.loads(
+                cleaned
             )
 
-            if isinstance(parsed, list):
+        except json.JSONDecodeError:
 
-                questions = [
-                    str(q).strip()
-                    for q in parsed
-                    if str(q).strip()
-                ]
+            # Fallback line parsing
+            questions = [
+                q.strip()
+                for q in answer.split("\n")
+                if q.strip()
+            ]
 
-        except Exception:
-
-            # Fallback if AI doesn't return valid JSON
-
-            lines = answer.split("\n")
-
-            for line in lines:
-
-                cleaned = re.sub(
-                    r"^\s*[\d\-\*\.\)]+\s*",
-                    "",
-                    line,
-                ).strip()
-
-                if cleaned:
-
-                    questions.append(
-                        cleaned
-                    )
-
-        # Keep maximum 10
-        questions = questions[:10]
-
-        if len(questions) == 0:
+        if not isinstance(
+            questions,
+            list
+        ):
 
             raise Exception(
-                "AI did not return interview questions."
+                "AI did not return a valid question list."
+            )
+
+        questions = [
+            str(q).strip()
+            for q in questions
+            if str(q).strip()
+        ]
+
+        # Keep exactly 10
+        questions = questions[:10]
+
+        if len(questions) < 10:
+
+            raise Exception(
+                "AI returned fewer than 10 interview questions."
             )
 
         return {
-
             "success": True,
-
-            # Flutter uses this
-            "resume": resume,
-
-            "questions": questions,
+            "questions": questions
         }
 
     except Exception as e:
 
-        print(
-            f"Mock Interview Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
 # ============================================================
-# INDIVIDUAL ANSWER EVALUATION
+# EVALUATE SINGLE ANSWER
 # ============================================================
 
 @app.post("/evaluate-answer")
@@ -763,45 +830,47 @@ Question:
 Candidate Answer:
 {data.answer}
 
-Return exactly:
+Return ONLY valid JSON:
 
-Score: X/10
+{{
+    "score": 0,
+    "strengths": [],
+    "weaknesses": [],
+    "better_answer": "",
+    "feedback": ""
+}}
 
-Strengths:
-- Point 1
-- Point 2
+Score must be between 0 and 10.
 
-Weaknesses:
-- Point 1
-- Point 2
-
-Suggested Better Answer:
-Write a professional ideal answer.
-
-Final Feedback:
-Give concise feedback.
+Be professional and constructive.
 """
 
-        answer = ask_ai(
-            prompt,
-            temperature=0.3,
-            max_tokens=2000,
-        )
+        answer = ask_ai(prompt)
+
+        cleaned = clean_json_response(answer)
+
+        try:
+
+            result = json.loads(cleaned)
+
+        except json.JSONDecodeError:
+
+            return {
+                "success": False,
+                "error": "Invalid JSON returned by AI.",
+                "raw_response": answer
+            }
 
         return {
             "success": True,
-            "evaluation": answer,
+            "evaluation": result
         }
 
     except Exception as e:
 
-        print(
-            f"Answer Evaluation Error: {e}"
-        )
-
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -816,41 +885,27 @@ async def evaluate_interview(
 
     try:
 
-        # ----------------------------------------------------
-        # Validate questions and answers
-        # ----------------------------------------------------
-
-        if not data.questions:
+        if len(data.questions) == 0:
 
             raise Exception(
                 "No interview questions received."
             )
 
-        if not data.answers:
+        if len(data.questions) != len(data.answers):
 
             raise Exception(
-                "No interview answers received."
+                "Questions and answers count do not match."
             )
 
-        # ----------------------------------------------------
         # Build interview transcript
-        # ----------------------------------------------------
-
         interview_text = ""
 
-        for i, question in enumerate(
-            data.questions
+        for i in range(
+            len(data.questions)
         ):
 
-            answer = ""
-
-            if i < len(data.answers):
-
-                answer = data.answers[i]
-
-            if not answer.strip():
-
-                answer = "No answer provided."
+            question = data.questions[i]
+            answer = data.answers[i]
 
             interview_text += f"""
 
@@ -858,344 +913,179 @@ Question {i + 1}:
 {question}
 
 Candidate Answer:
-{answer}
+{answer if answer.strip() else "No answer provided."}
 
 """
-
-
-        # ----------------------------------------------------
-        # AI EVALUATION
-        # ----------------------------------------------------
 
         prompt = f"""
 You are a senior technical interviewer.
 
-Evaluate this complete mock interview.
+Evaluate the candidate's COMPLETE mock interview.
 
-Candidate Resume:
+Resume:
+
 {data.resume}
 
 Interview:
 
 {interview_text}
 
-The candidate is an early-career student.
-
-Evaluate:
-
-1. Technical knowledge
-2. Communication
-3. Problem solving
-4. Confidence
-5. HR responses
-6. Project knowledge
-7. Overall interview performance
-
-Calculate an overall score from 0 to 10.
-
+IMPORTANT:
 Return ONLY valid JSON.
 
-Use exactly this structure:
+Use EXACTLY this structure:
 
 {{
-    "overall_score": "8/10",
-    "technical_feedback": "Detailed technical performance feedback.",
-    "hr_feedback": "Detailed HR and communication feedback.",
-    "strengths": [
-        "Strength 1",
-        "Strength 2",
-        "Strength 3"
+    "overall_score": 0,
+
+    "technical_score": 0,
+
+    "hr_score": 0,
+
+    "project_score": 0,
+
+    "technical_feedback": "",
+
+    "hr_feedback": "",
+
+    "strengths": [],
+
+    "weaknesses": [],
+
+    "improvements": [],
+
+    "question_evaluations": [
+        {{
+            "question_number": 1,
+            "score": 0,
+            "feedback": "",
+            "better_answer": ""
+        }}
     ],
-    "weaknesses": [
-        "Weakness 1",
-        "Weakness 2",
-        "Weakness 3"
-    ],
-    "improvements": [
-        "Improvement 1",
-        "Improvement 2",
-        "Improvement 3"
-    ],
-    "final_verdict": "Professional final interview verdict.",
-    "recommendations": [
-        "Recommendation 1",
-        "Recommendation 2",
-        "Recommendation 3"
-    ]
+
+    "final_verdict": ""
 }}
 
-Do not add markdown.
-Do not add ```json.
-Return only JSON.
+RULES:
+
+1. overall_score must be between 0 and 10.
+
+2. technical_score must be between 0 and 10.
+
+3. hr_score must be between 0 and 10.
+
+4. project_score must be between 0 and 10.
+
+5. Evaluate every question.
+
+6. question_evaluations must contain one object
+   for every question.
+
+7. Score every answer between 0 and 10.
+
+8. Consider an unanswered question as 0.
+
+9. Give constructive feedback.
+
+10. Do not invent candidate experience.
+
+11. final_verdict should clearly explain whether
+    the candidate appears ready for an entry-level role.
+
+12. Return ONLY JSON.
 """
 
-        answer = ask_ai(
-            prompt,
-            temperature=0.2,
-            max_tokens=4000,
-        )
+        answer = ask_ai(prompt)
 
-        # ----------------------------------------------------
-        # PARSE AI JSON
-        # ----------------------------------------------------
+        cleaned = clean_json_response(answer)
 
         try:
 
-            result = clean_json_response(
-                answer
-            )
+            result = json.loads(cleaned)
 
-        except Exception as json_error:
+        except json.JSONDecodeError:
 
-            print(
-                "AI returned invalid JSON."
-            )
-
-            print(
-                f"Raw AI response: {answer}"
-            )
-
-            # ------------------------------------------------
-            # Fallback evaluation
-            # ------------------------------------------------
-
-            result = {
-
-                "overall_score": "7/10",
-
-                "technical_feedback": answer,
-
-                "hr_feedback":
-                    "The candidate completed the mock interview. "
-                    "Communication should continue to be improved "
-                    "through regular practice.",
-
-                "strengths": [
-                    "Completed the interview.",
-                    "Demonstrated technical interest.",
-                    "Provided responses to interview questions.",
-                ],
-
-                "weaknesses": [
-                    "Some answers may require more technical depth.",
-                    "Communication can be made more structured.",
-                    "More project-specific examples would improve responses.",
-                ],
-
-                "improvements": [
-                    "Practice explaining technical concepts clearly.",
-                    "Use real project examples in answers.",
-                    "Practice common HR interview questions.",
-                ],
-
-                "final_verdict":
-                    "The candidate shows good potential "
-                    "for an early-career technical role. "
-                    "Further interview practice is recommended.",
-
-                "recommendations": [
-                    "Practice technical interview questions.",
-                    "Improve project explanation skills.",
-                    "Practice concise HR responses.",
-                ],
+            return {
+                "success": False,
+                "error": "AI returned invalid evaluation JSON.",
+                "raw_response": answer
             }
 
-        # ----------------------------------------------------
-        # Normalize response
-        # ----------------------------------------------------
-
-        overall_score = str(
-            result.get(
-                "overall_score",
-                "7/10"
-            )
-        )
-
-        technical_feedback = str(
-            result.get(
-                "technical_feedback",
-                "No technical feedback available."
-            )
-        )
-
-        hr_feedback = str(
-            result.get(
-                "hr_feedback",
-                "No HR feedback available."
-            )
-        )
-
-        strengths = result.get(
-            "strengths",
-            []
-        )
-
-        weaknesses = result.get(
-            "weaknesses",
-            []
-        )
-
-        improvements = result.get(
-            "improvements",
-            []
-        )
-
-        recommendations = result.get(
-            "recommendations",
-            []
-        )
-
-        final_verdict = str(
-            result.get(
-                "final_verdict",
-                "Keep practicing and improving your interview skills."
-            )
-        )
-
-        # ----------------------------------------------------
-        # Convert lists to strings
-        # ----------------------------------------------------
-
-        if isinstance(
-            strengths,
-            list
-        ):
-
-            strengths_text = "\n".join(
-                f"• {str(x)}"
-                for x in strengths
-            )
-
-        else:
-
-            strengths_text = str(
-                strengths
-            )
-
-
-        if isinstance(
-            weaknesses,
-            list
-        ):
-
-            weaknesses_text = "\n".join(
-                f"• {str(x)}"
-                for x in weaknesses
-            )
-
-        else:
-
-            weaknesses_text = str(
-                weaknesses
-            )
-
-
-        if isinstance(
-            improvements,
-            list
-        ):
-
-            improvements_text = "\n".join(
-                f"• {str(x)}"
-                for x in improvements
-            )
-
-        else:
-
-            improvements_text = str(
-                improvements
-            )
-
-
-        if isinstance(
-            recommendations,
-            list
-        ):
-
-            recommendations_text = "\n".join(
-                f"• {str(x)}"
-                for x in recommendations
-            )
-
-        else:
-
-            recommendations_text = str(
-                recommendations
-            )
-
-
-        # ----------------------------------------------------
-        # Final response for Flutter
-        # ----------------------------------------------------
-
         return {
-
             "success": True,
 
             "overall_score":
-                overall_score,
+                result.get(
+                    "overall_score",
+                    0
+                ),
+
+            "technical_score":
+                result.get(
+                    "technical_score",
+                    0
+                ),
+
+            "hr_score":
+                result.get(
+                    "hr_score",
+                    0
+                ),
+
+            "project_score":
+                result.get(
+                    "project_score",
+                    0
+                ),
 
             "technical_feedback":
-                technical_feedback,
+                result.get(
+                    "technical_feedback",
+                    ""
+                ),
 
             "hr_feedback":
-                hr_feedback,
+                result.get(
+                    "hr_feedback",
+                    ""
+                ),
 
             "strengths":
-                strengths_text,
+                result.get(
+                    "strengths",
+                    []
+                ),
 
             "weaknesses":
-                weaknesses_text,
+                result.get(
+                    "weaknesses",
+                    []
+                ),
 
             "improvements":
-                improvements_text,
+                result.get(
+                    "improvements",
+                    []
+                ),
+
+            "question_evaluations":
+                result.get(
+                    "question_evaluations",
+                    []
+                ),
 
             "final_verdict":
-                final_verdict,
-
-            "recommendations":
-                recommendations_text,
-
-            # Complete report
-            "evaluation":
-                f"""
-OVERALL SCORE
-{overall_score}
-
-TECHNICAL PERFORMANCE
-{technical_feedback}
-
-HR & COMMUNICATION
-{hr_feedback}
-
-STRENGTHS
-{strengths_text}
-
-WEAKNESSES
-{weaknesses_text}
-
-AREAS FOR IMPROVEMENT
-{improvements_text}
-
-RECOMMENDATIONS
-{recommendations_text}
-
-FINAL VERDICT
-{final_verdict}
-""".strip(),
+                result.get(
+                    "final_verdict",
+                    ""
+                )
         }
 
     except Exception as e:
 
-        print(
-            f"Complete Interview Evaluation Error: {e}"
-        )
-
         return {
-
             "success": False,
-
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -1215,55 +1105,41 @@ You are an AI Career Assistant.
 
 Help students with:
 
-• Resume Review
-• ATS Score
-• Resume Improvement
-• Interview Preparation
-• Job Recommendations
-• Skill Gap Analysis
-• Learning Roadmap
-• Flutter
-• Python
-• Java
-• Data Structures
-• Artificial Intelligence
-• Machine Learning
-• Data Science
-• Career Guidance
+- Resume Review
+- ATS Score
+- Resume Improvement
+- Interview Preparation
+- Job Recommendations
+- Skill Gap Analysis
+- Learning Roadmap
+- Flutter
+- Python
+- Java
+- Data Structures
+- Artificial Intelligence
+- Machine Learning
+- Data Science
+- Career Guidance
 
-Answer professionally.
+Answer professionally, clearly and concisely.
 
-Keep the answer clear and practical.
-
-Question:
+User Question:
 
 {request.question}
 """
 
-        answer = ask_ai(
-            prompt,
-            temperature=0.5,
-            max_tokens=2500,
-        )
+        answer = ask_ai(prompt)
 
         return {
-
             "success": True,
-
-            "answer": answer,
+            "answer": answer
         }
 
     except Exception as e:
 
-        print(
-            f"Chat Error: {e}"
-        )
-
         return {
-
             "success": False,
-
-            "error": str(e),
+            "error": str(e)
         }
 
 
@@ -1275,49 +1151,14 @@ Question:
 async def health():
 
     return {
-
         "success": True,
-
-        "status":
-            "Backend Running",
-
-        "version":
-            "4.0",
-
-        "model":
-            AI_MODEL,
-
-        "endpoints": [
-
-            "/",
-
-            "/health",
-
-            "/analyze",
-
-            "/ats-score",
-
-            "/job-recommendation",
-
-            "/skill-gap",
-
-            "/course-recommendation",
-
-            "/learning-roadmap",
-
-            "/mock-interview",
-
-            "/evaluate-answer",
-
-            "/evaluate-interview",
-
-            "/chat",
-        ],
+        "status": "Backend Running",
+        "version": "4.0"
     }
 
 
 # ============================================================
-# RUN SERVER LOCALLY
+# RUN SERVER
 # ============================================================
 
 if __name__ == "__main__":
@@ -1325,12 +1166,8 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-
         "app:app",
-
         host="0.0.0.0",
-
         port=8000,
-
-        reload=True,
+        reload=True
     )
