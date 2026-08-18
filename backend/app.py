@@ -9,6 +9,7 @@ from openai import OpenAI
 import tempfile
 import json
 import os
+import re
 
 
 # ============================================================
@@ -18,6 +19,9 @@ import os
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    print("WARNING: GROQ_API_KEY is not configured.")
 
 
 # ============================================================
@@ -31,13 +35,13 @@ client = OpenAI(
 
 
 # ============================================================
-# FASTAPI APPLICATION
+# FASTAPI APP
 # ============================================================
 
 app = FastAPI(
     title="AI Career Assistant",
-    description="AI-powered career guidance and resume analysis API",
-    version="4.0"
+    version="4.0",
+    description="AI Career Assistant Backend",
 )
 
 
@@ -47,31 +51,18 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-
     allow_origins=["*"],
-
     allow_credentials=True,
-
     allow_methods=["*"],
-
     allow_headers=["*"],
 )
 
 
 # ============================================================
-# DATA MODELS
+# CONFIGURATION
 # ============================================================
 
-class ChatRequest(BaseModel):
-
-    question: str
-
-
-class InterviewAnswer(BaseModel):
-
-    question: str
-
-    answer: str
+AI_MODEL = "openai/gpt-oss-120b"
 
 
 # ============================================================
@@ -83,147 +74,180 @@ async def home():
 
     return {
         "success": True,
-        "message": "AI Career Assistant Backend Running",
-        "version": "4.0"
+        "message": "AI Career Assistant Backend Running Successfully",
+        "version": "4.0",
+        "model": AI_MODEL,
     }
 
 
 # ============================================================
-# HEALTH CHECK
+# DATA MODELS
 # ============================================================
 
-@app.get("/health")
-async def health():
-
-    return {
-        "success": True,
-        "status": "Backend Running",
-        "version": "4.0"
-    }
+class ChatRequest(BaseModel):
+    question: str
 
 
-# ============================================================
-# GROQ MODELS
-# ============================================================
+class InterviewAnswer(BaseModel):
+    question: str
+    answer: str
 
-@app.get("/models")
-async def get_models():
 
-    try:
-
-        models = client.models.list()
-
-        return {
-            "success": True,
-
-            "models": [
-                model.id
-                for model in models.data
-            ]
-        }
-
-    except Exception as e:
-
-        return {
-            "success": False,
-            "error": str(e)
-        }
+class InterviewEvaluationRequest(BaseModel):
+    resume: str = ""
+    questions: list[str]
+    answers: list[str]
 
 
 # ============================================================
-# EXTRACT PDF TEXT
+# RESUME TEXT EXTRACTION
 # ============================================================
 
-def extract_resume_text(file: UploadFile):
+async def extract_resume_text(file: UploadFile) -> str:
 
     temp_path = None
 
     try:
+
+        content = await file.read()
+
+        if not content:
+            raise Exception("Uploaded PDF is empty.")
 
         with tempfile.NamedTemporaryFile(
             delete=False,
             suffix=".pdf"
         ) as temp:
 
-            temp.write(file.file.read())
-
+            temp.write(content)
             temp_path = temp.name
-
 
         reader = PdfReader(temp_path)
 
         text = ""
 
-
         for page in reader.pages:
 
-            page_text = page.extract_text()
+            try:
 
-            if page_text:
+                page_text = page.extract_text()
 
-                text += page_text + "\n"
+                if page_text:
+                    text += page_text + "\n"
 
+            except Exception as e:
 
-        return text.strip()
+                print(
+                    f"PDF page extraction error: {e}"
+                )
 
+        text = text.strip()
+
+        if not text:
+
+            raise Exception(
+                "Could not extract text from the PDF. "
+                "Please upload a text-based PDF."
+            )
+
+        return text
 
     finally:
 
         if temp_path and os.path.exists(temp_path):
 
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
 
 
 # ============================================================
-# AI ENGINE
+# AI HELPER
 # ============================================================
 
-def ask_ai(prompt: str):
+def ask_ai(
+    prompt: str,
+    temperature: float = 0.4,
+    max_tokens: int = 4096,
+) -> str:
 
     if not GROQ_API_KEY:
 
         raise Exception(
-            "GROQ_API_KEY is not configured."
+            "GROQ_API_KEY is not configured on the server."
         )
-
 
     response = client.chat.completions.create(
 
-        model="openai/gpt-oss-20b",
+        model=AI_MODEL,
 
         messages=[
-
             {
                 "role": "system",
-
-                "content": """
-You are an expert AI Career Assistant.
-
-Your job is to provide accurate, professional,
-structured and useful career guidance.
-
-Always use clear headings and bullet points
-when appropriate.
-
-Avoid unnecessary repetition.
-"""
+                "content": (
+                    "You are an expert AI Career Assistant, "
+                    "professional interviewer and career advisor."
+                ),
             },
-
             {
                 "role": "user",
-
-                "content": prompt
-            }
-
+                "content": prompt,
+            },
         ],
 
-        temperature=0.4,
-
-        max_tokens=2048,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
+    if not response.choices:
 
-    return response.choices[0].message.content
+        raise Exception(
+            "AI returned an empty response."
+        )
+
+    answer = response.choices[0].message.content
+
+    if not answer:
+
+        raise Exception(
+            "AI returned an empty answer."
+        )
+
+    return answer.strip()
+
+
+# ============================================================
+# JSON CLEANER
+# ============================================================
+
+def clean_json_response(text: str):
+
+    text = text.strip()
+
+    # Remove markdown code blocks
+    text = re.sub(
+        r"^```json\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"^```\s*",
+        "",
+        text,
+    )
+
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text,
+    )
+
+    text = text.strip()
+
+    return json.loads(text)
 
 
 # ============================================================
@@ -237,65 +261,60 @@ async def analyze_resume(
 
     try:
 
-        resume = extract_resume_text(file)
-
-
-        if not resume:
-
-            return {
-                "success": False,
-                "error": "Unable to extract text from resume."
-            }
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
 You are an ATS Resume Expert.
 
-Analyze the following resume.
+Analyze the following resume professionally.
 
-Return a professional report using exactly these sections:
+Return the following sections:
 
-1. ATS SCORE
-Give a score out of 100.
+1. ATS Score (Out of 100)
 
-2. PROFESSIONAL SUMMARY
-Summarize the candidate.
+2. Professional Summary
 
-3. TECHNICAL SKILLS
-List the important skills.
+3. Technical Skills
 
-4. STRENGTHS
-List major strengths.
+4. Soft Skills
 
-5. WEAKNESSES
-List weaknesses or missing areas.
+5. Education
 
-6. RESUME IMPROVEMENTS
-Give practical suggestions.
+6. Projects
 
-7. CAREER RECOMMENDATION
-Suggest suitable career paths.
+7. Experience
+
+8. Strengths
+
+9. Weaknesses
+
+10. Suggestions to Improve
+
+11. Recommended Career Roles
+
+Keep the report clear and suitable for an early-career student.
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "analysis": answer
+            "analysis": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"Resume Analysis Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -310,46 +329,49 @@ async def ats_score(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
 Analyze this resume as an ATS system.
 
-Return:
+Return exactly:
 
 ATS Score: X/100
 
-Keyword Match:
-Formatting:
-Technical Skills:
-Experience:
-Education:
+Reason:
+Give a clear explanation.
 
-Main Issues:
+Missing Keywords:
+- keyword 1
+- keyword 2
+- keyword 3
 
-Recommendations:
+Improvement Suggestions:
+- suggestion 1
+- suggestion 2
+- suggestion 3
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "score": answer
+            "score": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"ATS Score Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -364,43 +386,44 @@ async def job_recommendation(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
 Analyze this resume.
 
-Recommend the TOP 10 most suitable jobs.
+Recommend the TOP 10 most suitable career roles.
 
-For every job provide:
+For every role provide:
 
-Job Title
-Match Percentage
-Reason
-Required Skills
+Job Title:
+Match Percentage:
+Why It Matches:
+Required Skills:
+Skills Missing:
 
-Rank the jobs from highest match to lowest.
+Rank the jobs from highest match to lowest match.
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "jobs": answer
+            "jobs": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"Job Recommendation Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -415,50 +438,59 @@ async def skill_gap(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
 You are an AI Career Advisor.
 
-Analyze the resume for an AI / Data Science career.
+Analyze this resume for a career in
+Artificial Intelligence and Data Science.
 
 Return:
 
-CURRENT SKILLS
+Overall Match:
 
-STRENGTHS
+Current Skills:
+- ...
 
-MISSING SKILLS
+Missing Skills:
+- ...
 
-HIGH PRIORITY SKILLS
+Technical Skill Gaps:
+- ...
 
-MEDIUM PRIORITY SKILLS
+Recommended Skills:
+- ...
 
-LEARNING SUGGESTIONS
+Learning Suggestions:
+- ...
 
-CAREER READINESS
+Priority:
+High:
+Medium:
+Low:
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "analysis": answer
+            "analysis": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"Skill Gap Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -473,45 +505,48 @@ async def course_recommendation(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
 Analyze this resume.
 
-Recommend the best learning courses.
+Recommend the BEST online courses for improving
+the candidate's career.
 
-Return at least 8 recommendations.
+Recommend around 8 courses.
 
 For every course provide:
 
-Course Name
-Platform
-Skill
-Difficulty
-Estimated Duration
-Reason
+Course Name:
+Platform:
+Level:
+Duration:
+Skills Learned:
+Reason:
+
+Prefer well-known learning platforms.
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "courses": answer
+            "courses": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"Course Recommendation Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -526,60 +561,65 @@ async def learning_roadmap(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
-Create a professional career learning roadmap.
+Create a professional learning roadmap
+based on this resume.
 
-Analyze this resume.
+The candidate is an early-career student.
 
 Return:
 
-CURRENT LEVEL
+Current Level:
 
-CAREER GOAL
+Career Goal:
 
-MONTH 1
+Month 1:
+Topics:
+Projects:
 
-MONTH 2
+Month 2:
+Topics:
+Projects:
 
-MONTH 3
+Month 3:
+Topics:
+Projects:
 
-MONTH 4
+Month 4:
+Topics:
+Projects:
 
-PROJECTS TO BUILD
+Recommended Certifications:
 
-IMPORTANT TECHNOLOGIES
+Portfolio Projects:
 
-RECOMMENDED CERTIFICATIONS
+Interview Preparation:
 
-INTERVIEW PREPARATION
-
-FINAL ADVICE
-
-Make the roadmap practical.
+Final Advice:
 
 Resume:
 
 {resume}
 """
 
-
         answer = ask_ai(prompt)
-
 
         return {
             "success": True,
-            "roadmap": answer
+            "roadmap": answer,
         }
-
 
     except Exception as e:
 
+        print(
+            f"Learning Roadmap Error: {e}"
+        )
+
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
         }
 
 
@@ -594,13 +634,12 @@ async def mock_interview(
 
     try:
 
-        resume = extract_resume_text(file)
-
+        resume = await extract_resume_text(file)
 
         prompt = f"""
-You are a professional technical interviewer.
+You are an expert technical interviewer.
 
-Read the candidate resume.
+Read the candidate resume carefully.
 
 Generate EXACTLY 10 interview questions.
 
@@ -608,26 +647,20 @@ Distribution:
 
 5 Technical Questions
 3 HR Questions
-2 Project Questions
+2 Project / Resume Questions
 
-Questions must be relevant to the candidate's
-skills, internships, projects and education.
+Questions must be personalized to the resume.
 
-Return ONLY valid JSON.
+Return ONLY a valid JSON array.
 
-Format:
+Example:
 
 [
-    "Question 1",
-    "Question 2",
-    "Question 3",
-    "Question 4",
-    "Question 5",
-    "Question 6",
-    "Question 7",
-    "Question 8",
-    "Question 9",
-    "Question 10"
+  "Explain your final year project.",
+  "What is supervised learning?",
+  "Explain OOP concepts in Java.",
+  "What are your strengths?",
+  "Where do you see yourself in five years?"
 ]
 
 Resume:
@@ -635,403 +668,81 @@ Resume:
 {resume}
 """
 
-
-        answer = ask_ai(prompt)
-        
-        # ============================================================
-# COMPLETE INTERVIEW EVALUATION
-# ============================================================
-
-class InterviewEvaluationRequest(BaseModel):
-    resume: str = ""
-    questions: list[str]
-    answers: list[str]
-
-
-@app.post("/evaluate-interview")
-async def evaluate_interview(data: InterviewEvaluationRequest):
-
-    try:
-
-        # --------------------------------------------------------
-        # Prepare interview questions and answers
-        # --------------------------------------------------------
-
-        interview_text = ""
-
-        for i, question in enumerate(data.questions):
-
-            if i < len(data.answers):
-                answer = data.answers[i]
-            else:
-                answer = "No answer provided."
-
-            if not answer.strip():
-                answer = "No answer provided."
-
-            interview_text += f"""
-Question {i + 1}:
-{question}
-
-Candidate Answer:
-{answer}
-
---------------------------------
-"""
-
-        # --------------------------------------------------------
-        # AI Evaluation Prompt
-        # --------------------------------------------------------
-
-        prompt = f"""
-You are a professional technical interviewer
-and AI career evaluator.
-
-Evaluate the candidate's complete mock interview.
-
-Candidate Resume:
-{data.resume}
-
-Interview Questions and Answers:
-{interview_text}
-
-Evaluate:
-
-1. Technical knowledge
-2. Communication
-3. Problem solving
-4. HR responses
-5. Project knowledge
-6. Answer relevance
-7. Overall interview performance
-
-The candidate is an early-career student,
-so evaluate fairly.
-
-Return ONLY valid JSON.
-
-Use EXACTLY this structure:
-
-{{
-    "overall_score": 0,
-    "technical_score": 0,
-    "communication_score": 0,
-    "hr_score": 0,
-    "project_score": 0,
-
-    "technical_feedback": "",
-    "hr_feedback": "",
-    "project_feedback": "",
-
-    "strengths": [
-        "",
-        "",
-        ""
-    ],
-
-    "weaknesses": [
-        "",
-        "",
-        ""
-    ],
-
-    "improvements": [
-        "",
-        "",
-        ""
-    ],
-
-    "final_verdict": "",
-
-    "recommendation": ""
-}}
-
-All scores must be between 0 and 10.
-
-Do not give 10 unless the performance is genuinely excellent.
-"""
-
-        # --------------------------------------------------------
-        # Call Groq AI
-        # --------------------------------------------------------
-
-        response = client.chat.completions.create(
-
-            model="openai/gpt-oss-20b",
-
-            messages=[
-                {
-                    "role": "system",
-                    "content":
-                        "You are an expert technical interviewer. "
-                        "Return only valid JSON."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-
+        answer = ask_ai(
+            prompt,
             temperature=0.3,
-
             max_tokens=3000,
-
-            response_format={
-                "type": "json_object"
-            }
         )
 
-        # --------------------------------------------------------
-        # Read AI response
-        # --------------------------------------------------------
-
-        ai_response = (
-            response
-            .choices[0]
-            .message
-            .content
-        )
-
-        evaluation = json.loads(ai_response)
-
-        # --------------------------------------------------------
-        # Return evaluation
-        # --------------------------------------------------------
-
-        return {
-            "success": True,
-
-            "overall_score":
-                evaluation.get(
-                    "overall_score",
-                    0
-                ),
-
-            "technical_score":
-                evaluation.get(
-                    "technical_score",
-                    0
-                ),
-
-            "communication_score":
-                evaluation.get(
-                    "communication_score",
-                    0
-                ),
-
-            "hr_score":
-                evaluation.get(
-                    "hr_score",
-                    0
-                ),
-
-            "project_score":
-                evaluation.get(
-                    "project_score",
-                    0
-                ),
-
-            "technical_feedback":
-                evaluation.get(
-                    "technical_feedback",
-                    ""
-                ),
-
-            "hr_feedback":
-                evaluation.get(
-                    "hr_feedback",
-                    ""
-                ),
-
-            "project_feedback":
-                evaluation.get(
-                    "project_feedback",
-                    ""
-                ),
-
-            "strengths":
-                evaluation.get(
-                    "strengths",
-                    []
-                ),
-
-            "weaknesses":
-                evaluation.get(
-                    "weaknesses",
-                    []
-                ),
-
-            "improvements":
-                evaluation.get(
-                    "improvements",
-                    []
-                ),
-
-            "final_verdict":
-                evaluation.get(
-                    "final_verdict",
-                    ""
-                ),
-
-            "recommendation":
-                evaluation.get(
-                    "recommendation",
-                    ""
-                )
-        }
-
-    except json.JSONDecodeError as e:
-
-        return {
-            "success": False,
-            "error":
-                f"AI returned invalid JSON: {str(e)}"
-        }
-
-    except Exception as e:
-
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-        # --------------------------------------------------------
-        # CLEAN AI JSON
-        # --------------------------------------------------------
-
-        cleaned = answer.strip()
-
-
-        if cleaned.startswith("```"):
-
-            cleaned = cleaned.replace(
-                "```json",
-                ""
-            )
-
-            cleaned = cleaned.replace(
-                "```",
-                ""
-            )
-
-            cleaned = cleaned.strip()
-
+        questions = []
 
         try:
 
-            questions = json.loads(cleaned)
+            parsed = clean_json_response(
+                answer
+            )
 
+            if isinstance(parsed, list):
+
+                questions = [
+                    str(q).strip()
+                    for q in parsed
+                    if str(q).strip()
+                ]
 
         except Exception:
 
-            questions = [
+            # Fallback if AI doesn't return valid JSON
 
-                q.strip(
-                    "-•1234567890. "
+            lines = answer.split("\n")
+
+            for line in lines:
+
+                cleaned = re.sub(
+                    r"^\s*[\d\-\*\.\)]+\s*",
+                    "",
+                    line,
                 ).strip()
 
-                for q in answer.split("\n")
+                if cleaned:
 
-                if q.strip()
-            ]
+                    questions.append(
+                        cleaned
+                    )
 
+        # Keep maximum 10
+        questions = questions[:10]
 
-        if not isinstance(
-            questions,
-            list
-        ):
+        if len(questions) == 0:
 
             raise Exception(
-                "Invalid interview question format."
+                "AI did not return interview questions."
             )
-
 
         return {
 
             "success": True,
 
-            "questions": questions[:10]
-        }
+            # Flutter uses this
+            "resume": resume,
 
+            "questions": questions,
+        }
 
     except Exception as e:
 
+        print(
+            f"Mock Interview Error: {e}"
+        )
+
         return {
-
             "success": False,
-
-            "error": str(e)
+            "error": str(e),
         }
 
 
 # ============================================================
-# INTERVIEW ANSWER EVALUATION ENGINE
-# ============================================================
-
-def evaluate_answer_with_ai(
-    question: str,
-    answer: str
-):
-
-    prompt = f"""
-You are an expert technical interviewer.
-
-Evaluate the candidate's answer.
-
-INTERVIEW QUESTION:
-
-{question}
-
-
-CANDIDATE ANSWER:
-
-{answer}
-
-
-Evaluate based on:
-
-1. Technical correctness
-2. Understanding
-3. Relevance
-4. Communication
-5. Completeness
-6. Confidence
-
-
-Return EXACTLY this structure:
-
-SCORE: X/10
-
-TECHNICAL QUALITY:
-Explain the technical quality.
-
-STRENGTHS:
-- Strength 1
-- Strength 2
-- Strength 3
-
-WEAKNESSES:
-- Weakness 1
-- Weakness 2
-- Weakness 3
-
-SUGGESTED BETTER ANSWER:
-Write a professional ideal answer.
-
-FINAL FEEDBACK:
-Give concise feedback and explain how the candidate
-can improve the answer.
-
-Do not change the question.
-"""
-
-
-    return ask_ai(prompt)
-
-
-# ============================================================
-# EVALUATE ANSWER
+# INDIVIDUAL ANSWER EVALUATION
 # ============================================================
 
 @app.post("/evaluate-answer")
@@ -1041,80 +752,451 @@ async def evaluate_answer(
 
     try:
 
-        question = data.question.strip()
+        prompt = f"""
+You are an expert technical interviewer.
 
-        answer = data.answer.strip()
+Evaluate the candidate's answer.
 
+Question:
+{data.question}
 
-        if not question:
+Candidate Answer:
+{data.answer}
 
-            return {
-                "success": False,
-                "error": "Question cannot be empty."
-            }
+Return exactly:
 
+Score: X/10
 
-        if not answer:
+Strengths:
+- Point 1
+- Point 2
 
-            return {
-                "success": False,
-                "error": "Please provide an answer."
-            }
+Weaknesses:
+- Point 1
+- Point 2
 
+Suggested Better Answer:
+Write a professional ideal answer.
 
-        evaluation = evaluate_answer_with_ai(
-            question,
-            answer
+Final Feedback:
+Give concise feedback.
+"""
+
+        answer = ask_ai(
+            prompt,
+            temperature=0.3,
+            max_tokens=2000,
         )
 
+        return {
+            "success": True,
+            "evaluation": answer,
+        }
+
+    except Exception as e:
+
+        print(
+            f"Answer Evaluation Error: {e}"
+        )
+
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
+# ============================================================
+# COMPLETE INTERVIEW EVALUATION
+# ============================================================
+
+@app.post("/evaluate-interview")
+async def evaluate_interview(
+    data: InterviewEvaluationRequest
+):
+
+    try:
+
+        # ----------------------------------------------------
+        # Validate questions and answers
+        # ----------------------------------------------------
+
+        if not data.questions:
+
+            raise Exception(
+                "No interview questions received."
+            )
+
+        if not data.answers:
+
+            raise Exception(
+                "No interview answers received."
+            )
+
+        # ----------------------------------------------------
+        # Build interview transcript
+        # ----------------------------------------------------
+
+        interview_text = ""
+
+        for i, question in enumerate(
+            data.questions
+        ):
+
+            answer = ""
+
+            if i < len(data.answers):
+
+                answer = data.answers[i]
+
+            if not answer.strip():
+
+                answer = "No answer provided."
+
+            interview_text += f"""
+
+Question {i + 1}:
+{question}
+
+Candidate Answer:
+{answer}
+
+"""
+
+
+        # ----------------------------------------------------
+        # AI EVALUATION
+        # ----------------------------------------------------
+
+        prompt = f"""
+You are a senior technical interviewer.
+
+Evaluate this complete mock interview.
+
+Candidate Resume:
+{data.resume}
+
+Interview:
+
+{interview_text}
+
+The candidate is an early-career student.
+
+Evaluate:
+
+1. Technical knowledge
+2. Communication
+3. Problem solving
+4. Confidence
+5. HR responses
+6. Project knowledge
+7. Overall interview performance
+
+Calculate an overall score from 0 to 10.
+
+Return ONLY valid JSON.
+
+Use exactly this structure:
+
+{{
+    "overall_score": "8/10",
+    "technical_feedback": "Detailed technical performance feedback.",
+    "hr_feedback": "Detailed HR and communication feedback.",
+    "strengths": [
+        "Strength 1",
+        "Strength 2",
+        "Strength 3"
+    ],
+    "weaknesses": [
+        "Weakness 1",
+        "Weakness 2",
+        "Weakness 3"
+    ],
+    "improvements": [
+        "Improvement 1",
+        "Improvement 2",
+        "Improvement 3"
+    ],
+    "final_verdict": "Professional final interview verdict.",
+    "recommendations": [
+        "Recommendation 1",
+        "Recommendation 2",
+        "Recommendation 3"
+    ]
+}}
+
+Do not add markdown.
+Do not add ```json.
+Return only JSON.
+"""
+
+        answer = ask_ai(
+            prompt,
+            temperature=0.2,
+            max_tokens=4000,
+        )
+
+        # ----------------------------------------------------
+        # PARSE AI JSON
+        # ----------------------------------------------------
+
+        try:
+
+            result = clean_json_response(
+                answer
+            )
+
+        except Exception as json_error:
+
+            print(
+                "AI returned invalid JSON."
+            )
+
+            print(
+                f"Raw AI response: {answer}"
+            )
+
+            # ------------------------------------------------
+            # Fallback evaluation
+            # ------------------------------------------------
+
+            result = {
+
+                "overall_score": "7/10",
+
+                "technical_feedback": answer,
+
+                "hr_feedback":
+                    "The candidate completed the mock interview. "
+                    "Communication should continue to be improved "
+                    "through regular practice.",
+
+                "strengths": [
+                    "Completed the interview.",
+                    "Demonstrated technical interest.",
+                    "Provided responses to interview questions.",
+                ],
+
+                "weaknesses": [
+                    "Some answers may require more technical depth.",
+                    "Communication can be made more structured.",
+                    "More project-specific examples would improve responses.",
+                ],
+
+                "improvements": [
+                    "Practice explaining technical concepts clearly.",
+                    "Use real project examples in answers.",
+                    "Practice common HR interview questions.",
+                ],
+
+                "final_verdict":
+                    "The candidate shows good potential "
+                    "for an early-career technical role. "
+                    "Further interview practice is recommended.",
+
+                "recommendations": [
+                    "Practice technical interview questions.",
+                    "Improve project explanation skills.",
+                    "Practice concise HR responses.",
+                ],
+            }
+
+        # ----------------------------------------------------
+        # Normalize response
+        # ----------------------------------------------------
+
+        overall_score = str(
+            result.get(
+                "overall_score",
+                "7/10"
+            )
+        )
+
+        technical_feedback = str(
+            result.get(
+                "technical_feedback",
+                "No technical feedback available."
+            )
+        )
+
+        hr_feedback = str(
+            result.get(
+                "hr_feedback",
+                "No HR feedback available."
+            )
+        )
+
+        strengths = result.get(
+            "strengths",
+            []
+        )
+
+        weaknesses = result.get(
+            "weaknesses",
+            []
+        )
+
+        improvements = result.get(
+            "improvements",
+            []
+        )
+
+        recommendations = result.get(
+            "recommendations",
+            []
+        )
+
+        final_verdict = str(
+            result.get(
+                "final_verdict",
+                "Keep practicing and improving your interview skills."
+            )
+        )
+
+        # ----------------------------------------------------
+        # Convert lists to strings
+        # ----------------------------------------------------
+
+        if isinstance(
+            strengths,
+            list
+        ):
+
+            strengths_text = "\n".join(
+                f"• {str(x)}"
+                for x in strengths
+            )
+
+        else:
+
+            strengths_text = str(
+                strengths
+            )
+
+
+        if isinstance(
+            weaknesses,
+            list
+        ):
+
+            weaknesses_text = "\n".join(
+                f"• {str(x)}"
+                for x in weaknesses
+            )
+
+        else:
+
+            weaknesses_text = str(
+                weaknesses
+            )
+
+
+        if isinstance(
+            improvements,
+            list
+        ):
+
+            improvements_text = "\n".join(
+                f"• {str(x)}"
+                for x in improvements
+            )
+
+        else:
+
+            improvements_text = str(
+                improvements
+            )
+
+
+        if isinstance(
+            recommendations,
+            list
+        ):
+
+            recommendations_text = "\n".join(
+                f"• {str(x)}"
+                for x in recommendations
+            )
+
+        else:
+
+            recommendations_text = str(
+                recommendations
+            )
+
+
+        # ----------------------------------------------------
+        # Final response for Flutter
+        # ----------------------------------------------------
 
         return {
 
             "success": True,
 
-            "evaluation": evaluation
+            "overall_score":
+                overall_score,
+
+            "technical_feedback":
+                technical_feedback,
+
+            "hr_feedback":
+                hr_feedback,
+
+            "strengths":
+                strengths_text,
+
+            "weaknesses":
+                weaknesses_text,
+
+            "improvements":
+                improvements_text,
+
+            "final_verdict":
+                final_verdict,
+
+            "recommendations":
+                recommendations_text,
+
+            # Complete report
+            "evaluation":
+                f"""
+OVERALL SCORE
+{overall_score}
+
+TECHNICAL PERFORMANCE
+{technical_feedback}
+
+HR & COMMUNICATION
+{hr_feedback}
+
+STRENGTHS
+{strengths_text}
+
+WEAKNESSES
+{weaknesses_text}
+
+AREAS FOR IMPROVEMENT
+{improvements_text}
+
+RECOMMENDATIONS
+{recommendations_text}
+
+FINAL VERDICT
+{final_verdict}
+""".strip(),
         }
 
-
     except Exception as e:
+
+        print(
+            f"Complete Interview Evaluation Error: {e}"
+        )
 
         return {
 
             "success": False,
 
-            "error": str(e)
+            "error": str(e),
         }
-
-
-# ============================================================
-# ALTERNATIVE EVALUATION ROUTES
-#
-# These make the backend compatible with older
-# Flutter versions of your project.
-# ============================================================
-
-@app.post("/evaluate")
-async def evaluate(
-    data: InterviewAnswer
-):
-
-    return await evaluate_answer(data)
-
-
-@app.post("/evaluate_interview")
-async def evaluate_interview(
-    data: InterviewAnswer
-):
-
-    return await evaluate_answer(data)
-
-
-@app.post("/evaluateAnswer")
-async def evaluateAnswer(
-    data: InterviewAnswer
-):
-
-    return await evaluate_answer(data)
 
 
 # ============================================================
@@ -1131,55 +1213,111 @@ async def chat(
         prompt = f"""
 You are an AI Career Assistant.
 
-Help the user with:
+Help students with:
 
-Resume Review
-ATS Score
-Resume Improvement
-Interview Preparation
-Job Recommendations
-Skill Gap Analysis
-Learning Roadmap
-Flutter
-Python
-Java
-Data Structures
-Artificial Intelligence
-Machine Learning
-Data Science
-Career Guidance
+• Resume Review
+• ATS Score
+• Resume Improvement
+• Interview Preparation
+• Job Recommendations
+• Skill Gap Analysis
+• Learning Roadmap
+• Flutter
+• Python
+• Java
+• Data Structures
+• Artificial Intelligence
+• Machine Learning
+• Data Science
+• Career Guidance
 
 Answer professionally.
 
-User Question:
+Keep the answer clear and practical.
+
+Question:
 
 {request.question}
 """
 
-
-        answer = ask_ai(prompt)
-
+        answer = ask_ai(
+            prompt,
+            temperature=0.5,
+            max_tokens=2500,
+        )
 
         return {
 
             "success": True,
 
-            "answer": answer
+            "answer": answer,
         }
 
-
     except Exception as e:
+
+        print(
+            f"Chat Error: {e}"
+        )
 
         return {
 
             "success": False,
 
-            "error": str(e)
+            "error": str(e),
         }
 
 
 # ============================================================
-# RUN SERVER
+# HEALTH CHECK
+# ============================================================
+
+@app.get("/health")
+async def health():
+
+    return {
+
+        "success": True,
+
+        "status":
+            "Backend Running",
+
+        "version":
+            "4.0",
+
+        "model":
+            AI_MODEL,
+
+        "endpoints": [
+
+            "/",
+
+            "/health",
+
+            "/analyze",
+
+            "/ats-score",
+
+            "/job-recommendation",
+
+            "/skill-gap",
+
+            "/course-recommendation",
+
+            "/learning-roadmap",
+
+            "/mock-interview",
+
+            "/evaluate-answer",
+
+            "/evaluate-interview",
+
+            "/chat",
+        ],
+    }
+
+
+# ============================================================
+# RUN SERVER LOCALLY
 # ============================================================
 
 if __name__ == "__main__":
