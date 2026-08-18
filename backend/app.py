@@ -637,6 +637,263 @@ Resume:
 
 
         answer = ask_ai(prompt)
+        
+        # ============================================================
+# COMPLETE INTERVIEW EVALUATION
+# ============================================================
+
+class InterviewEvaluationRequest(BaseModel):
+    resume: str = ""
+    questions: list[str]
+    answers: list[str]
+
+
+@app.post("/evaluate-interview")
+async def evaluate_interview(data: InterviewEvaluationRequest):
+
+    try:
+
+        # --------------------------------------------------------
+        # Prepare interview questions and answers
+        # --------------------------------------------------------
+
+        interview_text = ""
+
+        for i, question in enumerate(data.questions):
+
+            if i < len(data.answers):
+                answer = data.answers[i]
+            else:
+                answer = "No answer provided."
+
+            if not answer.strip():
+                answer = "No answer provided."
+
+            interview_text += f"""
+Question {i + 1}:
+{question}
+
+Candidate Answer:
+{answer}
+
+--------------------------------
+"""
+
+        # --------------------------------------------------------
+        # AI Evaluation Prompt
+        # --------------------------------------------------------
+
+        prompt = f"""
+You are a professional technical interviewer
+and AI career evaluator.
+
+Evaluate the candidate's complete mock interview.
+
+Candidate Resume:
+{data.resume}
+
+Interview Questions and Answers:
+{interview_text}
+
+Evaluate:
+
+1. Technical knowledge
+2. Communication
+3. Problem solving
+4. HR responses
+5. Project knowledge
+6. Answer relevance
+7. Overall interview performance
+
+The candidate is an early-career student,
+so evaluate fairly.
+
+Return ONLY valid JSON.
+
+Use EXACTLY this structure:
+
+{{
+    "overall_score": 0,
+    "technical_score": 0,
+    "communication_score": 0,
+    "hr_score": 0,
+    "project_score": 0,
+
+    "technical_feedback": "",
+    "hr_feedback": "",
+    "project_feedback": "",
+
+    "strengths": [
+        "",
+        "",
+        ""
+    ],
+
+    "weaknesses": [
+        "",
+        "",
+        ""
+    ],
+
+    "improvements": [
+        "",
+        "",
+        ""
+    ],
+
+    "final_verdict": "",
+
+    "recommendation": ""
+}}
+
+All scores must be between 0 and 10.
+
+Do not give 10 unless the performance is genuinely excellent.
+"""
+
+        # --------------------------------------------------------
+        # Call Groq AI
+        # --------------------------------------------------------
+
+        response = client.chat.completions.create(
+
+            model="openai/gpt-oss-20b",
+
+            messages=[
+                {
+                    "role": "system",
+                    "content":
+                        "You are an expert technical interviewer. "
+                        "Return only valid JSON."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+
+            temperature=0.3,
+
+            max_tokens=3000,
+
+            response_format={
+                "type": "json_object"
+            }
+        )
+
+        # --------------------------------------------------------
+        # Read AI response
+        # --------------------------------------------------------
+
+        ai_response = (
+            response
+            .choices[0]
+            .message
+            .content
+        )
+
+        evaluation = json.loads(ai_response)
+
+        # --------------------------------------------------------
+        # Return evaluation
+        # --------------------------------------------------------
+
+        return {
+            "success": True,
+
+            "overall_score":
+                evaluation.get(
+                    "overall_score",
+                    0
+                ),
+
+            "technical_score":
+                evaluation.get(
+                    "technical_score",
+                    0
+                ),
+
+            "communication_score":
+                evaluation.get(
+                    "communication_score",
+                    0
+                ),
+
+            "hr_score":
+                evaluation.get(
+                    "hr_score",
+                    0
+                ),
+
+            "project_score":
+                evaluation.get(
+                    "project_score",
+                    0
+                ),
+
+            "technical_feedback":
+                evaluation.get(
+                    "technical_feedback",
+                    ""
+                ),
+
+            "hr_feedback":
+                evaluation.get(
+                    "hr_feedback",
+                    ""
+                ),
+
+            "project_feedback":
+                evaluation.get(
+                    "project_feedback",
+                    ""
+                ),
+
+            "strengths":
+                evaluation.get(
+                    "strengths",
+                    []
+                ),
+
+            "weaknesses":
+                evaluation.get(
+                    "weaknesses",
+                    []
+                ),
+
+            "improvements":
+                evaluation.get(
+                    "improvements",
+                    []
+                ),
+
+            "final_verdict":
+                evaluation.get(
+                    "final_verdict",
+                    ""
+                ),
+
+            "recommendation":
+                evaluation.get(
+                    "recommendation",
+                    ""
+                )
+        }
+
+    except json.JSONDecodeError as e:
+
+        return {
+            "success": False,
+            "error":
+                f"AI returned invalid JSON: {str(e)}"
+        }
+
+    except Exception as e:
+
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
         # --------------------------------------------------------
